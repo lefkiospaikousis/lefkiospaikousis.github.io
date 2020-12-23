@@ -1,0 +1,226 @@
+---
+title: "A workflow with labelled data"
+description: |
+  A short description of the post.
+author:
+  - name: Lefkios  Paikousis
+    url: https://example.com/norajones
+date: 12-23-2020
+output:
+  distill::distill_article:
+    self_contained: false
+draft: true
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+
+### The Libraries
+
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(labelled)
+library(gtsummary)
+library(readxl)
+```
+
+
+I usually work with survey data that come in the form of a spreadsheet (usually from google forms).
+
+The variable names are long and highly descriptive of what information the variable contains, but that long of a anme, makes it very hard to work with while wrangling the dataset.   
+
+What I want is to keep the original variable name as a `label` and rename the variable names with new `names` 
+
+To demontrate my workflow, I created a sample dataset to work with. You can download it `here`.
+
+The dataset is stored as an excel file, and has two worksheets.  
+
+- In the worksheet `data` you can see the raw data, and     
+- In the worksheet `labels` you can find a sort of data dictionary
+
+In the `labels` worksheet I keep a record of the original variable names as `label` and on the adjacent column,
+I type a short but readable column `name` for the variable.
+
+![worksheet:labels](figure/data_labels.jpg)
+
+### Read the data and data-dictionary
+
+Let's read in the data
+
+
+```{r}
+
+path = "sample_survey.xlsx"
+dta <- readxl::read_xlsx(path)
+
+glimpse(dta)
+```
+
+The dataset contains 6 columns
+
+Read in the `labels` worksheet for the column dictionary
+
+```{r}
+dta_labels <- readxl::read_xlsx(path, sheet = "labels")
+
+dta_labels
+```
+
+
+Now, 
+
+- Change the column names of the dataset to the short names in the dictionary    
+- Set the `labels` of the columns via the `labelled::var_label()` function
+- Create a `label_list` object, which is a named list where the names of the list are variable `names` and the values of the list are the variable `labels`
+- Also, save a `label_vector` named vector with the same informationas the `label_list`
+
+```{r}
+names(dta) <- dta_labels$name
+
+var_label(dta) <- dta_labels$label
+
+labels_list <- var_label(dta)
+labels_vector <-  var_label(dta, unlist = TRUE)
+
+labels_list
+```
+
+Have a look at the dataset names now
+
+```{r}
+glimpse(dta)
+```
+
+Now its very easy to keep using the variable names in your code, but variable labels are rendered in the tables
+when using `{gtsummary}` for example.
+
+```{r}
+dta %>%
+  select(overall,restaurant) %>% 
+  tbl_summary(
+    by  = restaurant
+  ) 
+```
+
+
+### Factors and order of the value labels
+
+The order of the satifaction levels in the previous table, is not the most appropriate. It should read from `Very dissatisfied` down to `Very satisfied`.    
+One way to accomplish this is to turn the variable into a factor. However, one problem arises now, where the `label` for the `overall` variable is gone. That is an inherent behaviour of `dplyr::mutate()` where it strips down these attributes off the variables that you manipulate.
+
+See the `overall` title in the table below    
+
+```{r}
+dta %>%
+  mutate(
+    overall  =  factor(overall,levels  = c("Very dissatisfied", "Dissatisfied", "Neutral", "Satisfied",
+                                           "Very satisfied"))
+  ) %>% 
+  select(overall,restaurant) %>% 
+  tbl_summary(
+    by  = restaurant
+  ) 
+```
+    
+     
+     
+You can easily solve this, using the `labelled::set_variable_names()` function.  This function can be used in the `dplyr` chain since it takes a `data` argument.    
+What you need to use is the `labels_list` we have saved before and pass it in the `.labels` argument of the `set_variable_names()`
+
+```{r}
+dta %>%
+  mutate(
+    overall  =  factor(overall,levels  = c("Very dissatisfied", 
+                                           "Dissatisfied", 
+                                           "Neutral", 
+                                           "Satisfied",
+                                           "Very satisfied"))
+  ) %>% 
+  set_variable_labels(.labels=labels_list) %>%  #After mutating, the label information of the `overall` variable is gone.
+  select(overall,restaurant) %>% 
+  tbl_summary(
+    by  = restaurant
+  ) 
+
+```      
+
+     
+Important to say that:    
+
+- Using the `labels_list` object we do not worry about the order of the variables as the matchingis done on the names of the variables.    
+
+- There is no problem if the data has __more__ variables than what the `labels_list` contains as long  as all the variables contained in the `labels_list` are also in the dataset we want to label
+
+
+## Plots
+
+### Use the `labels_list` when defining plot labels.
+
+
+
+
+```{r}
+dta %>%
+  mutate(
+    overall  =  factor(overall,levels  = c("Very dissatisfied", 
+                                           "Dissatisfied", 
+                                           "Neutral", 
+                                           "Satisfied",
+                                           "Very satisfied"))
+  ) %>% 
+  mutate(
+    restaurant = fct_collapse(restaurant, limassol  =   c("Limassol", "Larnaka"), other_level = "other")
+  ) %>% 
+  set_variable_labels(.labels=labels_list) %>%  #After mutating, the label information of the `overall` variable is gone.
+  count(overall) %>% 
+  ggplot(aes(overall, n))+
+  geom_col()+
+  coord_flip()+
+  labs(x=labels_list[["overall"]])
+
+```
+
+
+### Use the `labels_vector` in the `facet_warp`
+
+
+Usually, with these kind of questions(a series of likert scale questions), I want to plot many questions at the same plot. One way to do this is by tranforming all the data into a long format and  get the counts (or proportions) of ech response to each question in a long table. Then we plot it by faceting the graph by the question.
+
+```{r}
+
+faceted_plot <- 
+  dta %>%
+  select(greeting, food, cost) %>% 
+  pivot_longer(everything(), 
+               names_to = "attribute",
+               values_to= "rating") %>% 
+  count(attribute,  rating) %>% 
+  mutate(
+    rating = factor(rating, c("Strongly agree", "Agree", "Neutral", "Disagree", "Strongly disagree"))
+  ) %>% 
+  ggplot(aes(rating, n))+
+  geom_col()+
+  coord_flip()+
+  facet_wrap(~attribute)
+
+faceted_plot
+```
+\newline
+
+
+When using facet wrap in `ggplots` we get the values of the facet column in the strip text. However, since the
+facet column is actually a column that holds the question, it would be great to have the long label in the facet strip instead of the short name. 
+
+Thankfully we don't have to do this manually. We can utilise the `label_vector` we saved earlier, and the underated ggplot function `as_labeller` (or sometimes the `labeller` function).You can read more about  [as_labeller](https://ggplot2.tidyverse.org/reference/as_labeller.html) and  [labeller](https://ggplot2.tidyverse.org/reference/labeller.html) for many more (and more usufull) use cases.
+
+
+```{r}
+
+
+faceted_plot+
+  facet_wrap(~attribute,labeller = as_labeller(labels_vector))
+  
+```
